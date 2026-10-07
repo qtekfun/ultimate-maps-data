@@ -98,6 +98,7 @@ jobs:
           echo "sdk.dir=${ANDROID_HOME:-/usr/local/lib/android/sdk}" > app/local.properties
           app/scripts/build-transit.sh app/scripts/transit/madrid.json transit-in transit-out
           ls -l transit-out
+          mkdir -p out
           cp transit-out/transit-madrid.umti transit-out/transit-madrid.json out/
 
       - name: Free disk space (the Android SDK is only needed by the transit tool)
