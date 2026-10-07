@@ -64,6 +64,8 @@ jobs:
           [ -n "$PM_DATE" ] || PM_DATE=$(date -u -d yesterday +%Y%m%d)
           MWM_V=$(python3 -c "import json;print(json.load(open('app/third_party/comaps/data/countries.txt'))['v'])")
           TAG="data-${MWM_V}-${PM_DATE}"
+          MAP_SERIES=$(python3 -c "import json;print(json.load(open('app/third_party/comaps/data/countries.txt'))['map_series'])")
+          echo "MAP_SERIES=$MAP_SERIES" >> "$GITHUB_ENV"
           echo "PM_DATE=$PM_DATE" >> "$GITHUB_ENV"; echo "MWM_V=$MWM_V" >> "$GITHUB_ENV"; echo "TAG=$TAG" >> "$GITHUB_ENV"
           curl -sfI "https://build.protomaps.com/${PM_DATE}.pmtiles" >/dev/null || { echo "Protomaps build $PM_DATE not found"; exit 1; }
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then echo "EXISTS=1" >> "$GITHUB_ENV"; fi
@@ -83,13 +85,19 @@ jobs:
         if: env.EXISTS != '1'
         run: |
           mkdir -p out mwm
-          for f in World WorldCoasts; do curl -sfL --connect-timeout 30 --max-time 900 --retry 3 -o "out/$f.mwm" "$CDN/$MWM_V/$f.mwm"; done
+          for f in World WorldCoasts; do curl -sfL --connect-timeout 30 --max-time 900 --retry 3 -o "out/$f.mwm" "$CDN/$MAP_SERIES/$MWM_V/$f.mwm"; done
           for p in app/third_party/comaps/data/borders/Spain_*.poly; do
             id=$(basename "$p" .poly)
             slug=$(python3 -I -c "import importlib.util,sys;s=importlib.util.spec_from_file_location('g','app/scripts/gen-region-catalog.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(m.slug(sys.argv[1]))" "$id")
             # The catalog reads <comapsId>.mwm; the release asset uses the slug (GitHub renames spaces).
-            if curl -sfL --connect-timeout 30 --max-time 900 --retry 3 -o "mwm/$id.mwm" "$CDN/$MWM_V/$id.mwm"; then ln "mwm/$id.mwm" "out/$slug.mwm"; else echo "missing $id"; rm -f "mwm/$id.mwm"; fi
+            if curl -sfL --connect-timeout 30 --max-time 900 --retry 3 -o "mwm/$id.mwm" "$CDN/$MAP_SERIES/$MWM_V/$id.mwm"; then ln "mwm/$id.mwm" "out/$slug.mwm"; else echo "missing $id"; rm -f "mwm/$id.mwm"; fi
           done
+          # A mirror may answer 200 with an HTML page for files it does not hold: check what was downloaded.
+          bad=0
+          for f in out/*.mwm; do
+            if [ "$(stat -c %s "$f")" -lt 100000 ] || head -c 1 "$f" | grep -q '<'; then echo "not a map: $f"; bad=1; fi
+          done
+          [ "$bad" = 0 ] || exit 1
           ls out | wc -l; du -sh out
 
       - name: Catalog
@@ -98,6 +106,17 @@ jobs:
           B="https://github.com/${{ github.repository }}/releases/download/${TAG}/"
           python3 -I app/scripts/gen-region-catalog.py --mwm-dir mwm --pmtiles-dir out \
             --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" -o out/catalog.json
+          python3 -I - <<'PY'
+          import json
+          c = json.load(open("out/catalog.json"))
+          def leaves(rs):
+              for r in rs:
+                  if "assets" in r: yield r
+          n = sum(1 for _ in leaves(c["regions"]))
+          print("downloadable regions:", n)
+          assert n >= 20, "too few downloadable regions"
+          assert "base" in c, "catalog without base"
+          PY
           (cd out && sha256sum * > SHA256SUMS)
 
       - name: Publish release and prune old ones
