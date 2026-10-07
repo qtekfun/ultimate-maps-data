@@ -99,12 +99,43 @@ jobs:
           [ "$bad" = 0 ] || exit 1
           ls out | wc -l; du -sh out
 
+      - name: Speed cameras file (optional; skipped while the converter is not on the app's default branch)
+        if: env.EXISTS != '1'
+        continue-on-error: true
+        run: |
+          if [ ! -f app/scripts/build-cameras.py ]; then echo "build-cameras.py not available yet; skipping"; exit 0; fi
+          sudo apt-get install -y -qq osmium-tool poppler-utils
+          mkdir -p cams
+          cd cams
+          ARGS=""
+          UA="Mozilla/5.0"
+          get() { curl -sSL --compressed --connect-timeout 30 --max-time 600 --retry 3 -o "$1" "$2"; }
+          get radares.xml   https://nap.dgt.es/datex2/dgt/PredefinedLocationsPublication/radares/content.xml || true
+          get situations.xml https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v37.xml || true
+          get camaras.xml   https://nap.dgt.es/datex2/v3/dgt/DevicePublication/camaras_datex2_v37.xml || true
+          get vms.xml       https://nap.dgt.es/datex2/v3/dgt/DevicePublication/vms_datex2_v37.xml || true
+          [ -s radares.xml ] && ARGS="$ARGS --dgt-radars radares.xml"
+          ANCH=""; for f in situations.xml camaras.xml vms.xml; do [ -s $f ] && ANCH="$ANCH $f"; done
+          [ -n "$ANCH" ] && ARGS="$ARGS --dgt-anchors$ANCH"
+          # The report (mobile-radar zones): its file name changes with the date, so take the link from the DGT page.
+          PAGE=https://www.dgt.es/conoce-el-estado-del-trafico/vigilancia-y-control/equipos-y-tramos-de-vigilancia/
+          LINK=$(curl -sSL -A "$UA" "$PAGE" | grep -o 'href="[^"]*INFORME_CINEMOMETROS[^"]*pdf"' | head -1 | sed 's/href="//;s/"$//')
+          if [ -n "$LINK" ] && curl -sSL -A "$UA" -o informe.pdf "https://www.dgt.es$LINK" && pdftotext -layout informe.pdf informe.txt; then ARGS="$ARGS --dgt-report informe.txt"; fi
+          curl -sSL --connect-timeout 30 --max-time 1800 --retry 3 -o spain.osm.pbf https://download.geofabrik.de/europe/spain-latest.osm.pbf
+          osmium tags-filter spain.osm.pbf n/highway=speed_camera -o cams.osm.pbf --overwrite
+          osmium export -f geojsonseq cams.osm.pbf -o cams.geojsonseq --overwrite
+          rm -f spain.osm.pbf
+          ARGS="$ARGS --osm-geojsonseq cams.geojsonseq"
+          python3 -I ../app/scripts/build-cameras.py $ARGS --generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o ../out/speedcams-es.bin --summary ../speedcams-summary.json
+          cat ../speedcams-summary.json
+
       - name: Catalog
         if: env.EXISTS != '1'
         run: |
           B="https://github.com/${{ github.repository }}/releases/download/${TAG}/"
           python3 -I app/scripts/gen-region-catalog.py --mwm-dir mwm --pmtiles-dir out \
-            --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" -o out/catalog.json
+            --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" \
+            $( [ -f out/speedcams-es.bin ] && echo "--cameras-file out/speedcams-es.bin --cameras-base $B" ) -o out/catalog.json
           python3 -I - <<'PY'
           import json
           c = json.load(open("out/catalog.json"))
