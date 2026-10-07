@@ -43,7 +43,6 @@ jobs:
         with:
           repository: qtekfun/UltimateMaps
           path: app
-          sparse-checkout: scripts
 
       - name: Latest CoMaps tag (borders and region hierarchy)
         run: |
@@ -102,6 +101,32 @@ jobs:
           [ "$bad" = 0 ] || exit 1
           ls out | wc -l; du -sh out
 
+      - uses: actions/setup-java@v4
+        if: env.EXISTS != '1'
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Public-transport index for Madrid (optional; its feeds only last about 30 days)
+        if: env.EXISTS != '1'
+        continue-on-error: true
+        run: |
+          if [ ! -f app/scripts/build-transit.sh ]; then echo "build-transit.sh not available; skipping"; exit 0; fi
+          mkdir -p transit-in transit-out
+          cd transit-in
+          get() { curl -fsSL --connect-timeout 30 --max-time 900 --retry 3 -o "$1" "$2"; }
+          get crtm_metro.zip        "http://crtm.maps.arcgis.com/sharing/rest/content/items/5c7f2951962540d69ffe8f640d94c246/data"
+          get crtm_metroligero.zip  "http://crtm.maps.arcgis.com/sharing/rest/content/items/aaed26cc0ff64b0c947ac0bc3e033196/data"
+          get crtm_emt.zip          "http://crtm.maps.arcgis.com/sharing/rest/content/items/868df0e58fca47e79b942902dffd7da0/data"
+          get crtm_interurban.zip   "http://crtm.maps.arcgis.com/sharing/rest/content/items/885399f83408473c8d815e40c5e702b7/data"
+          get crtm_urban_other.zip  "http://crtm.maps.arcgis.com/sharing/rest/content/items/357e63c2904f43aeb5d8a267a64346d8/data"
+          get renfe_cercanias.zip   "https://ssl.renfe.com/ftransit/Fichero_CER_FOMENTO/fomento_transit.zip"
+          ls -l
+          cd ..
+          app/scripts/build-transit.sh app/scripts/transit/madrid.json transit-in transit-out
+          ls -l transit-out
+          cp transit-out/transit-madrid.umti transit-out/transit-madrid.json out/
+
       - name: Speed cameras file (optional; skipped while the converter is not on the app's default branch)
         if: env.EXISTS != '1'
         continue-on-error: true
@@ -138,7 +163,8 @@ jobs:
           B="https://github.com/${{ github.repository }}/releases/download/${TAG}/"
           python3 -I app/scripts/gen-region-catalog.py --mwm-dir mwm --pmtiles-dir out \
             --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" \
-            $( [ -f out/speedcams-es.bin ] && echo "--cameras-file out/speedcams-es.bin --cameras-base $B" ) -o out/catalog.json
+            $( [ -f out/speedcams-es.bin ] && echo "--cameras-file out/speedcams-es.bin --cameras-base $B" ) \
+            $( [ -f out/transit-madrid.umti ] && echo "--transit-file out/transit-madrid.umti --transit-base $B" ) -o out/catalog.json
           python3 -I - <<'PY'
           import json
           c = json.load(open("out/catalog.json"))
