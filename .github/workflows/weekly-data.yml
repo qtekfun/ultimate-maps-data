@@ -90,7 +90,7 @@ jobs:
             id=$(basename "$p" .poly)
             slug=$(python3 -I -c "import importlib.util,sys;s=importlib.util.spec_from_file_location('g','app/scripts/gen-region-catalog.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(m.slug(sys.argv[1]))" "$id")
             # The catalog reads <comapsId>.mwm; the release asset uses the slug (GitHub renames spaces).
-            if curl -sfL --connect-timeout 30 --max-time 900 --retry 3 -o "mwm/$id.mwm" "$CDN/$MAP_SERIES/$MWM_V/$id.mwm"; then ln "mwm/$id.mwm" "out/$slug.mwm"; else echo "missing $id"; rm -f "mwm/$id.mwm"; fi
+            if curl -sfL --connect-timeout 30 --max-time 900 --retry 3 -o "mwm/$id.mwm" "$CDN/$MAP_SERIES/$MWM_V/${id// /%20}.mwm"; then ln "mwm/$id.mwm" "out/$slug.mwm"; else echo "missing $id"; rm -f "mwm/$id.mwm"; fi
           done
           # A mirror may answer 200 with an HTML page for files it does not hold: check what was downloaded.
           bad=0
