@@ -10,6 +10,9 @@ on:
       protomaps_date:
         description: "Protomaps build date (YYYYMMDD); default: yesterday"
         required: false
+      tag_suffix:
+        description: "Optional suffix for the release tag (e.g. -b), to publish again for the same dates"
+        required: false
 
 permissions:
   contents: write
@@ -62,7 +65,7 @@ jobs:
           PM_DATE="${{ github.event.inputs.protomaps_date }}"
           [ -n "$PM_DATE" ] || PM_DATE=$(date -u -d yesterday +%Y%m%d)
           MWM_V=$(python3 -c "import json;print(json.load(open('app/third_party/comaps/data/countries.txt'))['v'])")
-          TAG="data-${MWM_V}-${PM_DATE}"
+          TAG="data-${MWM_V}-${PM_DATE}${{ github.event.inputs.tag_suffix }}"
           MAP_SERIES=$(python3 -c "import json;print(json.load(open('app/third_party/comaps/data/countries.txt'))['map_series'])")
           echo "MAP_SERIES=$MAP_SERIES" >> "$GITHUB_ENV"
           echo "PM_DATE=$PM_DATE" >> "$GITHUB_ENV"; echo "MWM_V=$MWM_V" >> "$GITHUB_ENV"; echo "TAG=$TAG" >> "$GITHUB_ENV"
