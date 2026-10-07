@@ -49,8 +49,7 @@ jobs:
           echo "CoMaps tag: $TAG"
           mkdir -p app/third_party
           git clone --depth 1 --branch "$TAG" --filter=blob:none --sparse https://codeberg.org/comaps/comaps app/third_party/comaps
-          git -C app/third_party/comaps sparse-checkout set data/borders
-          git -C app/third_party/comaps sparse-checkout add --no-cone data/countries.txt || true
+          git -C app/third_party/comaps sparse-checkout set --no-cone /data/borders/ /data/countries.txt
           ls app/third_party/comaps/data | head
           echo "COMAPS_TAG=$TAG" >> "$GITHUB_ENV"
 
@@ -67,8 +66,7 @@ jobs:
           TAG="data-${MWM_V}-${PM_DATE}"
           echo "PM_DATE=$PM_DATE" >> "$GITHUB_ENV"; echo "MWM_V=$MWM_V" >> "$GITHUB_ENV"; echo "TAG=$TAG" >> "$GITHUB_ENV"
           curl -sfI "https://build.protomaps.com/${PM_DATE}.pmtiles" >/dev/null || { echo "Protomaps build $PM_DATE not found"; exit 1; }
-          if gh release view "$TAG" >/dev/null 2>&1; then echo "EXISTS=1" >> "$GITHUB_ENV"; fi
-        working-directory: data
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then echo "EXISTS=1" >> "$GITHUB_ENV"; fi
         env:
           GH_TOKEN: ${{ github.token }}
 
