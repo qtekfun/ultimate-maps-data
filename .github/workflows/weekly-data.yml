@@ -21,7 +21,7 @@ concurrency:
 
 env:
   PMTILES_VERSION: "1.31.2"
-  CDN: "https://cdn-us-1.comaps.app/maps"
+  CDN: "https://cdn-fi-1.comaps.app/maps" # a mirror from CoMaps private.h; cdn-us-1 did not serve the files
   KEEP_RELEASES: "2"
 
 jobs:
@@ -83,12 +83,12 @@ jobs:
         if: env.EXISTS != '1'
         run: |
           mkdir -p out mwm
-          for f in World WorldCoasts; do curl -sfL -o "out/$f.mwm" "$CDN/$MWM_V/$f.mwm"; done
+          for f in World WorldCoasts; do curl -sfL --connect-timeout 30 --max-time 900 --retry 3 -o "out/$f.mwm" "$CDN/$MWM_V/$f.mwm"; done
           for p in app/third_party/comaps/data/borders/Spain_*.poly; do
             id=$(basename "$p" .poly)
             slug=$(python3 -I -c "import importlib.util,sys;s=importlib.util.spec_from_file_location('g','app/scripts/gen-region-catalog.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(m.slug(sys.argv[1]))" "$id")
             # The catalog reads <comapsId>.mwm; the release asset uses the slug (GitHub renames spaces).
-            if curl -sfL -o "mwm/$id.mwm" "$CDN/$MWM_V/$id.mwm"; then ln "mwm/$id.mwm" "out/$slug.mwm"; else echo "missing $id"; rm -f "mwm/$id.mwm"; fi
+            if curl -sfL --connect-timeout 30 --max-time 900 --retry 3 -o "mwm/$id.mwm" "$CDN/$MWM_V/$id.mwm"; then ln "mwm/$id.mwm" "out/$slug.mwm"; else echo "missing $id"; rm -f "mwm/$id.mwm"; fi
           done
           ls out | wc -l; du -sh out
 
