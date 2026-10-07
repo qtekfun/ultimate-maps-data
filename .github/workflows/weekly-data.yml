@@ -1,0 +1,121 @@
+name: Weekly data release
+
+# Builds the Spain region data (PMTiles for rendering + CoMaps .mwm for search/routing) plus the world base,
+# publishes it as a GitHub Release and keeps only the two newest data releases.
+on:
+  # schedule: enabled after the first successful manual run
+  # schedule:
+  #   - cron: "17 3 * * 1" # Mondays 03:17 UTC
+  workflow_dispatch:
+    inputs:
+      protomaps_date:
+        description: "Protomaps build date (YYYYMMDD); default: yesterday"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-data
+  cancel-in-progress: false
+
+env:
+  PMTILES_VERSION: "1.31.2"
+  CDN: "https://cdn-us-1.comaps.app/maps"
+  KEEP_RELEASES: "2"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - name: Free disk space
+        run: sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet && df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          path: data
+
+      - name: Project scripts
+        uses: actions/checkout@v4
+        with:
+          repository: qtekfun/UltimateMaps
+          path: app
+          sparse-checkout: scripts
+
+      - name: Latest CoMaps tag (borders and region hierarchy)
+        run: |
+          TAG=$(git ls-remote --tags --refs https://codeberg.org/comaps/comaps 'v20*' | sed 's|.*refs/tags/||' | sort -V | tail -1)
+          echo "CoMaps tag: $TAG"
+          mkdir -p app/third_party
+          git clone --depth 1 --branch "$TAG" --filter=blob:none --sparse https://codeberg.org/comaps/comaps app/third_party/comaps
+          git -C app/third_party/comaps sparse-checkout set data/borders
+          git -C app/third_party/comaps sparse-checkout add --no-cone data/countries.txt || true
+          ls app/third_party/comaps/data | head
+          echo "COMAPS_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: go-pmtiles
+        run: |
+          curl -sL "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz" | tar xz -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/pmtiles" version
+
+      - name: Resolve versions
+        run: |
+          PM_DATE="${{ github.event.inputs.protomaps_date }}"
+          [ -n "$PM_DATE" ] || PM_DATE=$(date -u -d yesterday +%Y%m%d)
+          MWM_V=$(python3 -c "import json;print(json.load(open('app/third_party/comaps/data/countries.txt'))['v'])")
+          TAG="data-${MWM_V}-${PM_DATE}"
+          echo "PM_DATE=$PM_DATE" >> "$GITHUB_ENV"; echo "MWM_V=$MWM_V" >> "$GITHUB_ENV"; echo "TAG=$TAG" >> "$GITHUB_ENV"
+          curl -sfI "https://build.protomaps.com/${PM_DATE}.pmtiles" >/dev/null || { echo "Protomaps build $PM_DATE not found"; exit 1; }
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "EXISTS=1" >> "$GITHUB_ENV"; fi
+        working-directory: data
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Spain PMTiles (one per region)
+        if: env.EXISTS != '1'
+        run: |
+          mkdir -p out
+          python3 -I app/scripts/split-pmtiles.py --pmtiles "$RUNNER_TEMP/pmtiles" \
+            --source "https://build.protomaps.com/${PM_DATE}.pmtiles" --out out --prefix Spain_
+          # world base: low zoom, whole planet
+          "$RUNNER_TEMP/pmtiles" extract "https://build.protomaps.com/${PM_DATE}.pmtiles" out/world-base.pmtiles --maxzoom=6
+
+      - name: Spain .mwm and world base .mwm from the CoMaps CDN
+        if: env.EXISTS != '1'
+        run: |
+          mkdir -p out mwm
+          for f in World WorldCoasts; do curl -sfL -o "out/$f.mwm" "$CDN/$MWM_V/$f.mwm"; done
+          for p in app/third_party/comaps/data/borders/Spain_*.poly; do
+            id=$(basename "$p" .poly)
+            slug=$(python3 -I -c "import importlib.util,sys;s=importlib.util.spec_from_file_location('g','app/scripts/gen-region-catalog.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(m.slug(sys.argv[1]))" "$id")
+            # The catalog reads <comapsId>.mwm; the release asset uses the slug (GitHub renames spaces).
+            if curl -sfL -o "mwm/$id.mwm" "$CDN/$MWM_V/$id.mwm"; then ln "mwm/$id.mwm" "out/$slug.mwm"; else echo "missing $id"; rm -f "mwm/$id.mwm"; fi
+          done
+          ls out | wc -l; du -sh out
+
+      - name: Catalog
+        if: env.EXISTS != '1'
+        run: |
+          B="https://github.com/${{ github.repository }}/releases/download/${TAG}/"
+          python3 -I app/scripts/gen-region-catalog.py --mwm-dir mwm --pmtiles-dir out \
+            --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" -o out/catalog.json
+          (cd out && sha256sum * > SHA256SUMS)
+
+      - name: Publish release and prune old ones
+        if: env.EXISTS != '1'
+        working-directory: data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" --prerelease=false --latest \
+            --title "Data ${MWM_V} (Protomaps ${PM_DATE})" \
+            --notes "Spain regions (PMTiles from Protomaps build ${PM_DATE}, CoMaps maps ${MWM_V}, CoMaps ${COMAPS_TAG}) plus the world base. Data © OpenStreetMap contributors (ODbL). Generated by the weekly workflow." \
+            ../out/*
+          # Keep only the newest KEEP_RELEASES data releases (the one just published is always kept).
+          gh release list --limit 100 --json tagName,createdAt \
+            -q '[.[]|select(.tagName|startswith("data-"))]|sort_by(.createdAt)|reverse|.['"$KEEP_RELEASES"':][]|.tagName' |
+          while read -r old; do
+            [ "$old" = "$TAG" ] && continue
+            echo "Deleting $old"; gh release delete "$old" --cleanup-tag --yes
+          done

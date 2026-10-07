@@ -21,3 +21,10 @@ Stable catalog (always the latest version): `https://github.com/qtekfun/Ultimate
 - The scripts that generate the catalog and the cuts are in `scripts/` of the app repository (`gen-region-catalog.py`, `split-pmtiles.py`).
 
 No warranty. OSM data can contain errors and must not be used for anything critical.
+
+## Weekly pipeline
+
+`.github/workflows/weekly-data.yml` runs every Monday (and on demand): it cuts the Spain regions out of the latest
+Protomaps build, downloads the matching CoMaps `.mwm` files, adds the world base (`World.mwm`, `WorldCoasts.mwm`
+and `world-base.pmtiles`, zoom ≤ 6), generates `catalog.json` and publishes a `data-<mwm>-<protomaps>` release.
+Only the two newest data releases are kept; older ones and their tags are deleted.
