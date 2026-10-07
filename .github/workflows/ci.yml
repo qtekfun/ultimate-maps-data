@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflows:
+    name: workflows (syntax)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The data workflow is only exercised by a manual or weekly run, so check it before it is merged:
+      # valid YAML, and every `run:` block must parse as bash.
+      - name: Validate workflow files
+        run: |
+          python3 - <<'PY'
+          import glob, subprocess, sys, tempfile, yaml
+          bad = 0
+          for path in sorted(glob.glob(".github/workflows/*.yml")):
+              doc = yaml.safe_load(open(path))
+              for name, job in (doc.get("jobs") or {}).items():
+                  for i, step in enumerate(job.get("steps") or []):
+                      run = step.get("run")
+                      if not run:
+                          continue
+                      with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as f:
+                          f.write(run)
+                      r = subprocess.run(["bash", "-n", f.name], capture_output=True, text=True)
+                      if r.returncode != 0:
+                          bad += 1
+                          print(f"{path} job {name} step {i} ({step.get('name')}): {r.stderr.strip()}")
+              print("ok", path)
+          sys.exit(1 if bad else 0)
+          PY
