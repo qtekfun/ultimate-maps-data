@@ -101,6 +101,55 @@ jobs:
           mkdir -p out
           cp transit-out/transit-madrid.umti transit-out/transit-madrid.json out/
 
+      # More cities from the Spanish National Access Point (NAP, nap.transportes.gob.es), one index per city config
+      # (app/scripts/transit/<city>.json with a `nap` file id per feed). The download needs the HTTP header
+      # `ApiKey: <key>`; the key is the repository secret NAP_API_KEY (never echoed). Nothing here can break the release:
+      # the step is continue-on-error, a city without a downloaded feed is skipped, feeds whose calendar ended before
+      # today are skipped by the builder, and a city whose build fails is reported and left out of the catalog.
+      - name: Public-transport indexes from the Spanish NAP (optional; every feed and city may fail on its own)
+        if: env.EXISTS != '1'
+        continue-on-error: true
+        env:
+          NAP_API_KEY: ${{ secrets.NAP_API_KEY }}
+        run: |
+          S="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "### NAP transit feeds"
+            echo
+            echo "| city | feed | download | detail |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$S"
+          if [ ! -f app/scripts/nap-fetch.py ] || [ ! -f app/scripts/build-transit.sh ]; then
+            echo "NAP scripts not available in the app repo yet; skipping"; echo "| - | - | skipped | scripts missing in the app repo |" >> "$S"; exit 0
+          fi
+          if [ -z "$NAP_API_KEY" ]; then
+            echo "::warning::secret NAP_API_KEY is not set; the NAP cities are skipped"; echo "| - | - | skipped | NAP_API_KEY is not set |" >> "$S"; exit 0
+          fi
+          mkdir -p out
+          echo "sdk.dir=${ANDROID_HOME:-/usr/local/lib/android/sdk}" > app/local.properties
+          built=""; failed=""
+          for m in app/scripts/transit/*.json; do
+            id=$(basename "$m" .json)
+            grep -q '"nap"' "$m" || continue
+            in="transit-nap-in/$id"; outd="transit-nap-out/$id"
+            python3 -I app/scripts/nap-fetch.py "$m" "$in" || true
+            if ! ls "$in"/*.zip >/dev/null 2>&1; then
+              echo "::warning::$id: no feed could be downloaded; city skipped"; failed="$failed $id"; continue
+            fi
+            if app/scripts/build-transit.sh "$m" "$in" "$outd" && [ -f "$outd/transit-$id.umti" ]; then
+              cp "$outd/transit-$id.umti" "$outd/transit-$id.json" out/
+              valid=$(python3 -I -c "import json,sys;m=json.load(open(sys.argv[1]));print(m['validFrom'],'to',m['validTo'])" "$outd/transit-$id.json")
+              echo "| $id | index | built | valid $valid, $(stat -c %s "$outd/transit-$id.umti") bytes |" >> "$S"
+              built="$built $id"
+            else
+              echo "::warning::$id: the index could not be built (all feeds expired or unreadable); city skipped"
+              echo "| $id | index | FAILED | build failed or every feed expired |" >> "$S"
+              failed="$failed $id"
+            fi
+          done
+          echo "NAP cities built:${built:- none}; skipped or failed:${failed:- none}"
+          echo "" >> "$S"; echo "Built:${built:- none}. Skipped or failed:${failed:- none}." >> "$S"
+
       - name: Free disk space (the Android SDK is only needed by the transit tool)
         if: env.EXISTS != '1'
         run: sudo rm -rf /usr/local/lib/android && df -h /
@@ -182,11 +231,17 @@ jobs:
         if: env.EXISTS != '1'
         run: |
           B="https://github.com/${{ github.repository }}/releases/download/${TAG}/"
+          # every transit index that has its sidecar (Madrid and the NAP cities that were built)
+          TR=""
+          for f in out/transit-*.umti; do
+            if [ -f "$f" ] && [ -f "${f%.umti}.json" ]; then TR="$TR --transit-file $f"; fi
+          done
+          if [ -n "$TR" ]; then TR="$TR --transit-base $B"; fi
           python3 -I app/scripts/gen-region-catalog.py --mwm-dir mwm --pmtiles-dir out \
             --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" \
             $( [ -f out/speedcams-es.bin ] && echo "--cameras-file out/speedcams-es.bin --cameras-base $B" ) \
             $( [ -f out/chargers-es.bin ] && echo "--chargers-file out/chargers-es.bin --chargers-base $B" ) \
-            $( [ -f out/transit-madrid.umti ] && echo "--transit-file out/transit-madrid.umti --transit-base $B" ) -o out/catalog.json
+            $TR -o out/catalog.json
           python3 -I - <<'PY'
           import json
           c = json.load(open("out/catalog.json"))
