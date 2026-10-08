@@ -227,6 +227,27 @@ jobs:
           python3 -I ../app/scripts/build-chargers.py --osm-geojsonseq chargers.geojsonseq --generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o ../out/chargers-es.bin --summary ../chargers-summary.json
           cat ../chargers-summary.json
 
+      - name: Hiking and cycling routes file (optional; skipped while the converter is not on the app's default branch)
+        if: env.EXISTS != '1'
+        continue-on-error: true
+        run: |
+          if [ ! -f app/scripts/build-routes.py ]; then echo "build-routes.py not available; skipping"; exit 0; fi
+          sudo apt-get install -y -qq osmium-tool
+          mkdir -p routes
+          cd routes
+          curl -sSL --connect-timeout 30 --max-time 1800 --retry 3 -o spain.osm.pbf https://download.geofabrik.de/europe/spain-latest.osm.pbf
+          # Route relations with their member ways and nodes (osmium keeps the referenced objects unless -R is given).
+          osmium tags-filter spain.osm.pbf r/route=hiking,foot,bicycle,mtb -o routes.osm.pbf --overwrite
+          rm -f spain.osm.pbf
+          # Closed ways (loops) must come out as lines, not areas, and untagged member ways must not be dropped.
+          echo '{"linear_tags": true, "area_tags": false}' > export.json
+          osmium export -c export.json -n -u type_id --geometry-types=linestring -f geojsonseq routes.osm.pbf -o ways.geojsonseq --overwrite
+          osmium cat -t relation -f opl routes.osm.pbf -o relations.opl --overwrite
+          rm -f routes.osm.pbf
+          python3 -I ../app/scripts/build-routes.py --relations-opl relations.opl --ways-geojsonseq ways.geojsonseq --generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o ../out/routes-es.bin --summary ../routes-summary.json
+          cat ../routes-summary.json
+          ls -l ../out/routes-es.bin
+
       - name: Catalog
         if: env.EXISTS != '1'
         run: |
@@ -241,6 +262,7 @@ jobs:
             --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" \
             $( [ -f out/speedcams-es.bin ] && echo "--cameras-file out/speedcams-es.bin --cameras-base $B" ) \
             $( [ -f out/chargers-es.bin ] && echo "--chargers-file out/chargers-es.bin --chargers-base $B" ) \
+            $( [ -f out/routes-es.bin ] && echo "--routes-file out/routes-es.bin --routes-base $B" ) \
             $TR -o out/catalog.json
           python3 -I - <<'PY'
           import json
