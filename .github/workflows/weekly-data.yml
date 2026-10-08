@@ -163,6 +163,21 @@ jobs:
           python3 -I ../app/scripts/build-cameras.py $ARGS --generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o ../out/speedcams-es.bin --summary ../speedcams-summary.json
           cat ../speedcams-summary.json
 
+      - name: EV chargers file (optional; skipped while the converter is not on the app's default branch)
+        if: env.EXISTS != '1'
+        continue-on-error: true
+        run: |
+          if [ ! -f app/scripts/build-chargers.py ]; then echo "build-chargers.py not available; skipping"; exit 0; fi
+          sudo apt-get install -y -qq osmium-tool
+          mkdir -p chargers
+          cd chargers
+          curl -sSL --connect-timeout 30 --max-time 1800 --retry 3 -o spain.osm.pbf https://download.geofabrik.de/europe/spain-latest.osm.pbf
+          osmium tags-filter spain.osm.pbf nw/amenity=charging_station -o chargers.osm.pbf --overwrite
+          osmium export -f geojsonseq chargers.osm.pbf -o chargers.geojsonseq --overwrite
+          rm -f spain.osm.pbf
+          python3 -I ../app/scripts/build-chargers.py --osm-geojsonseq chargers.geojsonseq --generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o ../out/chargers-es.bin --summary ../chargers-summary.json
+          cat ../chargers-summary.json
+
       - name: Catalog
         if: env.EXISTS != '1'
         run: |
@@ -170,6 +185,7 @@ jobs:
           python3 -I app/scripts/gen-region-catalog.py --mwm-dir mwm --pmtiles-dir out \
             --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" \
             $( [ -f out/speedcams-es.bin ] && echo "--cameras-file out/speedcams-es.bin --cameras-base $B" ) \
+            $( [ -f out/chargers-es.bin ] && echo "--chargers-file out/chargers-es.bin --chargers-base $B" ) \
             $( [ -f out/transit-madrid.umti ] && echo "--transit-file out/transit-madrid.umti --transit-base $B" ) -o out/catalog.json
           python3 -I - <<'PY'
           import json
