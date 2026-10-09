@@ -82,6 +82,8 @@ jobs:
       - name: Public-transport index for Madrid (optional; its feeds only last about 30 days)
         if: env.EXISTS != '1'
         continue-on-error: true
+        env:
+          NAP_API_KEY: ${{ secrets.NAP_API_KEY }}
         run: |
           if [ ! -f app/scripts/build-transit.sh ]; then echo "build-transit.sh not available; skipping"; exit 0; fi
           mkdir -p transit-in transit-out
@@ -95,6 +97,13 @@ jobs:
           get renfe_cercanias.zip   "https://ssl.renfe.com/ftransit/Fichero_CER_FOMENTO/fomento_transit.zip"
           ls -l
           cd ..
+          # The CRTM portal copy of the Metro feed expired on 2026-05-27 and is no longer updated. The NAP copy (file 1134,
+          # needs the ApiKey) replaces crtm_metro.zip only when it downloads as a good zip; the builder skips an expired one.
+          if [ -n "$NAP_API_KEY" ] && [ -f app/scripts/nap-fetch.py ]; then
+            python3 -I app/scripts/nap-fetch.py app/scripts/transit/madrid.json transit-in || true
+          else
+            echo "::warning::NAP_API_KEY or nap-fetch.py not available; Madrid Metro stays on the CRTM portal copy"
+          fi
           echo "sdk.dir=${ANDROID_HOME:-/usr/local/lib/android/sdk}" > app/local.properties
           app/scripts/build-transit.sh app/scripts/transit/madrid.json transit-in transit-out
           ls -l transit-out
@@ -131,6 +140,7 @@ jobs:
           for m in app/scripts/transit/*.json; do
             id=$(basename "$m" .json)
             grep -q '"nap"' "$m" || continue
+            [ "$id" = madrid ] && continue  # Madrid has its own step above (only its Metro feed comes from the NAP)
             in="transit-nap-in/$id"; outd="transit-nap-out/$id"
             python3 -I app/scripts/nap-fetch.py "$m" "$in" || true
             if ! ls "$in"/*.zip >/dev/null 2>&1; then
