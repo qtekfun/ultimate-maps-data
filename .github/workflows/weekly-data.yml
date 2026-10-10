@@ -197,7 +197,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ ! -f app/scripts/build-cameras.py ]; then echo "build-cameras.py not available yet; skipping"; exit 0; fi
-          sudo apt-get install -y -qq osmium-tool poppler-utils
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool poppler-utils
           mkdir -p cams
           cd cams
           ARGS=""
@@ -227,7 +227,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ ! -f app/scripts/build-chargers.py ]; then echo "build-chargers.py not available; skipping"; exit 0; fi
-          sudo apt-get install -y -qq osmium-tool
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
           mkdir -p chargers
           cd chargers
           curl -sSL --connect-timeout 30 --max-time 1800 --retry 3 -o spain.osm.pbf https://download.geofabrik.de/europe/spain-latest.osm.pbf
@@ -242,7 +242,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ ! -f app/scripts/build-zbe.py ]; then echo "build-zbe.py not available; skipping"; exit 0; fi
-          sudo apt-get install -y -qq osmium-tool
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
           mkdir -p zbe
           cd zbe
           curl -sSL --connect-timeout 30 --max-time 1800 --retry 3 -o spain.osm.pbf https://download.geofabrik.de/europe/spain-latest.osm.pbf
@@ -260,7 +260,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ ! -f app/scripts/build-routes.py ]; then echo "build-routes.py not available; skipping"; exit 0; fi
-          sudo apt-get install -y -qq osmium-tool
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
           mkdir -p routes
           cd routes
           curl -sSL --connect-timeout 30 --max-time 1800 --retry 3 -o spain.osm.pbf https://download.geofabrik.de/europe/spain-latest.osm.pbf
