@@ -28,3 +28,27 @@ No warranty. OSM data can contain errors and must not be used for anything criti
 Protomaps build, downloads the matching CoMaps `.mwm` files, adds the world base (`World.mwm`, `WorldCoasts.mwm`
 and `world-base.pmtiles`, zoom ≤ 6), generates `catalog.json` and publishes a `data-<mwm>-<protomaps>` release.
 Only the two newest data releases are kept; older ones and their tags are deleted.
+
+### Public-transport index (Madrid)
+
+Every run also builds `transit-madrid.umti` (+ `transit-madrid.json`, the build report) with the app repository's
+`scripts/build-transit.sh` and lists it in the `transit` array of `catalog.json` (the app downloads it only when the user asks).
+Inputs: the CRTM GTFS feeds (Metro, Metro Ligero, EMT, interurban and other urban buses; the Metro copy is replaced by the
+NAP file 1134 when `NAP_API_KEY` is set) and the Renfe Cercanias feed; URLs in `docs/phase2/transit.md` of the app repository.
+
+- **Licences and attribution:** CRTM open static-data licence (cite CRTM, say the data is processed, "Powered by CRTM" with a
+  link; same terms with "Powered by MITRAMS" for the NAP copy) and Renfe CC BY 4.0 (credit Renfe, indicate changes). The
+  attribution strings come from `scripts/transit/madrid.json` in the app repository, are stored in the index and in the
+  catalog, and the app shows them.
+- **Sanity gate** (`scripts/check-transit.py`): size range, minimum stops and lines, not expired, geometry block present,
+  at least four feeds included, sidecar SHA-256 matches, attribution credits the included publishers.
+- **Failure policy:** a transit failure never blocks the map data release. If a feed cannot be downloaded the builder
+  leaves it out; if the build or the gate fails, a warning and a job-summary line are written and the release is published
+  without a `transit` entry (indexes already installed on phones stay usable). An index that passes the gate is always
+  published, with its checksum in `SHA256SUMS`.
+- **Dry run:** start the workflow manually with `dry_run` enabled. Everything is built, nothing is released or pruned, and
+  the catalog, checksums, transit index and reports are kept for 7 days as the `dry-run-<id>` workflow artifact. A dry run
+  uses the tag `...-dryrun`, so it is not skipped because a release for the same dates exists. `app_ref` selects the ref of
+  the app repository that supplies the converters (default: its default branch).
+- The app's Gradle build needs the `ultimate-mapcore` submodule even for this tool; the workflow fetches only that one.
+

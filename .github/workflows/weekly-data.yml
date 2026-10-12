@@ -13,6 +13,13 @@ on:
       tag_suffix:
         description: "Optional suffix for the release tag (e.g. -b), to publish again for the same dates"
         required: false
+      dry_run:
+        description: "Dry run: build everything but do not create or prune any release; the small outputs (catalog, checksums, transit index and reports) are kept as a workflow artifact"
+        type: boolean
+        default: false
+      app_ref:
+        description: "Ref (branch, tag or commit) of qtekfun/UltimateMaps that supplies the converters; default: its default branch"
+        required: false
 
 permissions:
   contents: write
@@ -43,6 +50,7 @@ jobs:
         with:
           repository: qtekfun/UltimateMaps
           path: app
+          ref: ${{ github.event.inputs.app_ref }}
 
       - name: Latest CoMaps tag (borders and region hierarchy)
         run: |
@@ -65,6 +73,8 @@ jobs:
           [ -n "$PM_DATE" ] || PM_DATE=$(date -u -d yesterday +%Y%m%d)
           MWM_V=$(python3 -c "import json;print(json.load(open('app/third_party/comaps/data/countries.txt'))['v'])")
           TAG="data-${MWM_V}-${PM_DATE}${{ github.event.inputs.tag_suffix }}"
+          # A dry run never collides with (or is skipped because of) a real release of the same dates.
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then TAG="${TAG}-dryrun"; echo "DRY_RUN=1" >> "$GITHUB_ENV"; fi
           MAP_SERIES=$(python3 -c "import json;print(json.load(open('app/third_party/comaps/data/countries.txt'))['map_series'])")
           echo "MAP_SERIES=$MAP_SERIES" >> "$GITHUB_ENV"
           echo "PM_DATE=$PM_DATE" >> "$GITHUB_ENV"; echo "MWM_V=$MWM_V" >> "$GITHUB_ENV"; echo "TAG=$TAG" >> "$GITHUB_ENV"
@@ -79,36 +89,80 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # The app's Gradle settings include the shared map viewer (`:mapcore`) from the git submodule `ultimate-mapcore`;
+      # a plain checkout leaves that directory empty and every Gradle build then fails while configuring the project
+      # ("Configuring project ':mapcore' without an existing directory"). Only that submodule is fetched (at the commit the
+      # app pins); the CoMaps submodule is not needed by the transit tool.
+      - name: Gradle prerequisites for the transit builder (ultimate-mapcore submodule)
+        if: env.EXISTS != '1'
+        continue-on-error: true
+        run: |
+          git -C app submodule update --init --depth 1 ultimate-mapcore
+          ls app/ultimate-mapcore/mapcore | head -3
+
+      # Madrid public-transport index: CRTM (Metro, Metro Ligero, EMT, interurban and other urban buses) and Renfe
+      # Cercanias feeds (URLs: docs/phase2/transit.md section 6 of the app repo; manifest scripts/transit/madrid.json,
+      # which also holds the attribution strings that end up in the catalog). Failure policy: a transit problem NEVER
+      # blocks the map data release. Any failure (download, build, sanity gate) is logged as a warning and summarised,
+      # and the release goes out without a `transit` entry, so the indexes already installed on phones stay usable.
+      # A build that passes the gate is always published (asset + catalog entry + SHA256SUMS).
       - name: Public-transport index for Madrid (optional; its feeds only last about 30 days)
         if: env.EXISTS != '1'
         continue-on-error: true
         env:
           NAP_API_KEY: ${{ secrets.NAP_API_KEY }}
         run: |
-          if [ ! -f app/scripts/build-transit.sh ]; then echo "build-transit.sh not available; skipping"; exit 0; fi
-          mkdir -p transit-in transit-out
-          cd transit-in
-          get() { curl -fsSL --connect-timeout 30 --max-time 900 --retry 3 -o "$1" "$2"; }
-          get crtm_metro.zip        "http://crtm.maps.arcgis.com/sharing/rest/content/items/5c7f2951962540d69ffe8f640d94c246/data"
-          get crtm_metroligero.zip  "http://crtm.maps.arcgis.com/sharing/rest/content/items/aaed26cc0ff64b0c947ac0bc3e033196/data"
-          get crtm_emt.zip          "http://crtm.maps.arcgis.com/sharing/rest/content/items/868df0e58fca47e79b942902dffd7da0/data"
-          get crtm_interurban.zip   "http://crtm.maps.arcgis.com/sharing/rest/content/items/885399f83408473c8d815e40c5e702b7/data"
-          get crtm_urban_other.zip  "http://crtm.maps.arcgis.com/sharing/rest/content/items/357e63c2904f43aeb5d8a267a64346d8/data"
-          get renfe_cercanias.zip   "https://ssl.renfe.com/ftransit/Fichero_CER_FOMENTO/fomento_transit.zip"
-          ls -l
-          cd ..
+          set -o pipefail
+          S="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "### Madrid transit index"
+            echo
+          } >> "$S"
+          skip() {
+            echo "::warning::Madrid transit index NOT published this week: $1 (the map data release continues without it)"
+            echo "Madrid transit index **not published**: $1" >> "$S"
+            exit 0
+          }
+          mkdir -p out transit-in transit-out
+          rm -f out/transit-madrid.umti out/transit-madrid.json
+          [ -f app/scripts/build-transit.sh ] || skip "build-transit.sh not available in the app repo"
+          [ -d app/ultimate-mapcore/mapcore ] || skip "the ultimate-mapcore submodule is missing, Gradle cannot configure the app project"
+          (
+            cd transit-in
+            get() { curl -fsSL --connect-timeout 30 --max-time 900 --retry 3 -o "$1" "$2" || { echo "::warning::download failed: $1"; rm -f "$1"; }; }
+            get crtm_metro.zip        "http://crtm.maps.arcgis.com/sharing/rest/content/items/5c7f2951962540d69ffe8f640d94c246/data"
+            get crtm_metroligero.zip  "http://crtm.maps.arcgis.com/sharing/rest/content/items/aaed26cc0ff64b0c947ac0bc3e033196/data"
+            get crtm_emt.zip          "http://crtm.maps.arcgis.com/sharing/rest/content/items/868df0e58fca47e79b942902dffd7da0/data"
+            get crtm_interurban.zip   "http://crtm.maps.arcgis.com/sharing/rest/content/items/885399f83408473c8d815e40c5e702b7/data"
+            get crtm_urban_other.zip  "http://crtm.maps.arcgis.com/sharing/rest/content/items/357e63c2904f43aeb5d8a267a64346d8/data"
+            get renfe_cercanias.zip   "https://ssl.renfe.com/ftransit/Fichero_CER_FOMENTO/fomento_transit.zip"
+            ls -l
+          )
           # The CRTM portal copy of the Metro feed expired on 2026-05-27 and is no longer updated. The NAP copy (file 1134,
-          # needs the ApiKey) replaces crtm_metro.zip only when it downloads as a good zip; the builder skips an expired one.
+          # needs the ApiKey) replaces crtm_metro.zip only when it downloads as a good zip; the builder skips an expired one
+          # (or, for this feed, projects its weekly pattern: manifest `projectCalendar`).
           if [ -n "$NAP_API_KEY" ] && [ -f app/scripts/nap-fetch.py ]; then
             python3 -I app/scripts/nap-fetch.py app/scripts/transit/madrid.json transit-in || true
           else
             echo "::warning::NAP_API_KEY or nap-fetch.py not available; Madrid Metro stays on the CRTM portal copy"
           fi
           echo "sdk.dir=${ANDROID_HOME:-/usr/local/lib/android/sdk}" > app/local.properties
-          app/scripts/build-transit.sh app/scripts/transit/madrid.json transit-in transit-out
+          # The build date is today (UTC): feeds whose calendar ended before it are left out and reported.
+          if ! app/scripts/build-transit.sh app/scripts/transit/madrid.json transit-in transit-out "$(date -u +%F)" 2>&1 | tee transit-build.log; then
+            skip "the builder failed (see the step log)"
+          fi
           ls -l transit-out
-          mkdir -p out
+          [ -f transit-out/transit-madrid.umti ] && [ -f transit-out/transit-madrid.json ] || skip "the builder produced no index (every feed missing or expired?)"
+          if ! python3 -I data/scripts/check-transit.py --umti transit-out/transit-madrid.umti --meta transit-out/transit-madrid.json --log transit-build.log | tee transit-gate.log; then
+            skip "the sanity gate rejected the index: $(grep '^ERROR' transit-gate.log | head -3 | tr '\n' ';')"
+          fi
           cp transit-out/transit-madrid.umti transit-out/transit-madrid.json out/
+          cp transit-out/transit-madrid.json transit-madrid-report.json
+          {
+            echo "Madrid transit index **built and kept for publication**: $(stat -c %s out/transit-madrid.umti) bytes, $(grep -o 'stops=[0-9]* lines=[0-9]*' transit-build.log | head -1)."
+            echo
+            grep -E '^(warning|ERROR)' transit-gate.log | sed 's/^/- /'
+          } >> "$S"
 
       # More cities from the Spanish National Access Point (NAP, nap.transportes.gob.es), one index per city config
       # (app/scripts/transit/<city>.json with a `nap` file id per feed). The download needs the HTTP header
@@ -296,20 +350,32 @@ jobs:
         if: env.EXISTS != '1'
         run: |
           B="https://github.com/${{ github.repository }}/releases/download/${TAG}/"
+          gen() {
+            # $1 = extra transit arguments (may be empty)
+            python3 -I app/scripts/gen-region-catalog.py --mwm-dir mwm --pmtiles-dir out \
+              --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" \
+              $( [ -f out/speedcams-es.bin ] && echo "--cameras-file out/speedcams-es.bin --cameras-base $B" ) \
+              $( [ -f out/chargers-es.bin ] && echo "--chargers-file out/chargers-es.bin --chargers-base $B" ) \
+              $( [ -f out/zbe-es.bin ] && echo "--zbe-file out/zbe-es.bin --zbe-base $B" ) \
+              $( [ -f out/routes-es.bin ] && echo "--routes-file out/routes-es.bin --routes-base $B" ) \
+              $( [ -f out/bikeshare-es.bin ] && echo "--bikeshare-file out/bikeshare-es.bin --bikeshare-base $B" ) \
+              $1 -o out/catalog.json
+          }
           # every transit index that has its sidecar (Madrid and the NAP cities that were built)
           TR=""
           for f in out/transit-*.umti; do
             if [ -f "$f" ] && [ -f "${f%.umti}.json" ]; then TR="$TR --transit-file $f"; fi
           done
           if [ -n "$TR" ]; then TR="$TR --transit-base $B"; fi
-          python3 -I app/scripts/gen-region-catalog.py --mwm-dir mwm --pmtiles-dir out \
-            --mwm-url-by-slug --mwm-base "$B" --pmtiles-base "$B" --base-dir out --base-url "$B" \
-            $( [ -f out/speedcams-es.bin ] && echo "--cameras-file out/speedcams-es.bin --cameras-base $B" ) \
-            $( [ -f out/chargers-es.bin ] && echo "--chargers-file out/chargers-es.bin --chargers-base $B" ) \
-            $( [ -f out/zbe-es.bin ] && echo "--zbe-file out/zbe-es.bin --zbe-base $B" ) \
-            $( [ -f out/routes-es.bin ] && echo "--routes-file out/routes-es.bin --routes-base $B" ) \
-            $( [ -f out/bikeshare-es.bin ] && echo "--bikeshare-file out/bikeshare-es.bin --bikeshare-base $B" ) \
-            $TR -o out/catalog.json
+          # Transit must never block the map release: if the catalog cannot be generated with the transit
+          # entries, drop the transit files and generate it again without them.
+          if ! gen "$TR"; then
+            [ -n "$TR" ] || exit 1
+            echo "::warning::catalog generation failed with the transit entries; publishing without transit"
+            echo "Catalog generation failed with transit entries: transit left out of this release." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            rm -f out/transit-*.umti out/transit-*.json
+            gen ""
+          fi
           python3 -I - <<'PY'
           import json
           c = json.load(open("out/catalog.json"))
@@ -320,11 +386,31 @@ jobs:
           print("downloadable regions:", n)
           assert n >= 20, "too few downloadable regions"
           assert "base" in c, "catalog without base"
+          print("transit entries:", [(t["id"], t["size"], t["validFrom"], t["validTo"]) for t in c.get("transit", [])])
           PY
           (cd out && sha256sum * > SHA256SUMS)
+          grep -E "transit-" out/SHA256SUMS || echo "no transit files in this release"
+
+      - name: Dry run result (nothing is published)
+        if: env.EXISTS != '1' && github.event.inputs.dry_run == 'true'
+        run: |
+          mkdir -p dryrun
+          cp out/catalog.json out/SHA256SUMS dryrun/
+          cp out/transit-* dryrun/ 2>/dev/null || true
+          cp transit-build.log transit-gate.log transit-madrid-report.json dryrun/ 2>/dev/null || true
+          cp ./*-summary.json dryrun/ 2>/dev/null || true
+          echo "Dry run: no release was created and no release was pruned (would have been tag ${TAG%-dryrun})." | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          ls -l dryrun
+
+      - uses: actions/upload-artifact@v4
+        if: env.EXISTS != '1' && github.event.inputs.dry_run == 'true'
+        with:
+          name: dry-run-${{ github.run_id }}
+          path: dryrun/
+          retention-days: 7
 
       - name: Publish release and prune old ones
-        if: env.EXISTS != '1'
+        if: env.EXISTS != '1' && github.event.inputs.dry_run != 'true'
         working-directory: data
         env:
           GH_TOKEN: ${{ github.token }}
